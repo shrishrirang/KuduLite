@@ -344,6 +344,8 @@ namespace Kudu.Services.Web
 
             ProxyRequestIfRelativeUrlMatches(@"/webssh", "http", "127.0.0.1", "3000", app);
 
+            ProxyRequestIfRelativeUrlMatches(@"/bashshell", "http", "127.0.0.1", "22", app);
+
             var configuration = app.ApplicationServices.GetRequiredService<IServerConfiguration>();
 
             // CORE TODO any equivalent for this? Needed?
@@ -629,7 +631,7 @@ namespace Kudu.Services.Web
             {
                 Scheme = scheme,
                 Host = host,
-                Port = port
+                Port = port,
             }));
         }
 
