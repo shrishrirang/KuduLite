@@ -345,7 +345,7 @@ namespace Kudu.Services.Web
             ProxyRequestIfRelativeUrlMatches(@"/webssh", "http", "127.0.0.1", "3000", app);
 
 
-            ProxyRequestIfRelativeUrlMatches(@"/ssh", "http", "127.0.0.1", "22", app);
+            ProxyRequestIfRelativeUrlMatches(@"/ssh", "http", "127.0.0.1", "6020", app);
 
             var configuration = app.ApplicationServices.GetRequiredService<IServerConfiguration>();
 
