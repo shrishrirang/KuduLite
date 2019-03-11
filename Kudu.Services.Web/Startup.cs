@@ -292,7 +292,7 @@ namespace Kudu.Services.Web
         {
             Console.WriteLine(@"Configure : " + DateTime.Now.ToString("hh.mm.ss.ffffff"));
 
-            loggerFactory.AddEventSourceLogger();
+            // loggerFactory.AddEventSourceLogger();
 
             KuduWebUtil.MigrateToNetCorePatch(_webAppRuntimeEnvironment);
 
