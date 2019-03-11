@@ -23,7 +23,7 @@ namespace Kudu.Core.Deployment.Generator
                 RepositoryPath,
                 context.OutputPath,
                 context.NextManifestFilePath,
-                context.PreviousManifestFilePath
+                null//context.PreviousManifestFilePath
                 );
 
             FileLogHelper.Log("Running KuduSync with  " + kuduSyncCommand);
@@ -63,7 +63,7 @@ namespace Kudu.Core.Deployment.Generator
             if (runOryxBuild)
             {
                 string oryxBuildCommand = string.Format("oryx build {0} -o {1} -l {2} --language-version {3} {4}",
-                    context.OutputPath,
+                    context.BuildTempPath,
                     context.OutputPath,
                     oryxLanguage,
                     version,
