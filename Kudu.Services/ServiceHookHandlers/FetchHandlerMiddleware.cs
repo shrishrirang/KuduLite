@@ -13,6 +13,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Text;
 using System.Threading.Tasks;
 
 namespace Kudu.Services
@@ -46,6 +47,24 @@ namespace Kudu.Services
                     context.Response.StatusCode = StatusCodes.Status404NotFound;
                     return;
                 }
+                MemoryStream injectedRequestStream = new MemoryStream();
+                var requestLog =
+                     $"REQUEST HttpMethod: {context.Request.Method}, Path: {context.Request.Path}";
+
+                using (var bodyReader = new StreamReader(context.Request.Body))
+                {
+                    var bodyAsText = bodyReader.ReadToEnd();
+                    if (string.IsNullOrWhiteSpace(bodyAsText) == false)
+                    {
+                        requestLog += $", Body : {bodyAsText}";
+                    }
+
+                    var bytesToWrite = Encoding.UTF8.GetBytes(bodyAsText);
+                    injectedRequestStream.Write(bytesToWrite, 0, bytesToWrite.Length);
+                    injectedRequestStream.Seek(0, SeekOrigin.Begin);
+                    context.Request.Body = injectedRequestStream;
+                }
+
 
                 // CORE TODO Need to set up UseDeveloperExceptionPage, UseExceptionHandler or the like in startup
                 //context.Response.TrySkipIisCustomErrors = true;
