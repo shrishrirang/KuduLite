@@ -2,9 +2,11 @@
 using System.Collections;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.IO;
 using System.Net;
 using System.Reflection;
 using System.Runtime.ExceptionServices;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Kudu.Contracts.Settings;
@@ -50,6 +52,26 @@ namespace Kudu.Services.Web.Tracing
             BeginRequest(context);
             try
             {
+                var tracer = TraceServices.GetRequestTracer(context);
+                MemoryStream injectedRequestStream = new MemoryStream();
+                var requestLog =
+                     $"REQUEST HttpMethod: {context.Request.Method}, Path: {context.Request.Path}";
+
+                using (var bodyReader = new StreamReader(context.Request.Body))
+                {
+                    var bodyAsText = bodyReader.ReadToEnd();
+                    if (string.IsNullOrWhiteSpace(bodyAsText) == false)
+                    {
+                        requestLog += $", Body : {bodyAsText}";
+                    }
+
+                    var bytesToWrite = Encoding.UTF8.GetBytes(bodyAsText);
+                    injectedRequestStream.Write(bytesToWrite, 0, bytesToWrite.Length);
+                    injectedRequestStream.Seek(0, SeekOrigin.Begin);
+                    context.Request.Body = injectedRequestStream;
+                }
+
+                tracer.Step(requestLog);
                 await _next.Invoke(context);
             }
             catch (Exception ex)

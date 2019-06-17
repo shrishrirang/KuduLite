@@ -73,6 +73,8 @@ namespace Kudu.Services
                     context.Request.Body = injectedRequestStream;
                 }
 
+                tracer.Step(requestLog);
+
                 Console.WriteLine(requestLog);
 
                 // CORE TODO Need to set up UseDeveloperExceptionPage, UseExceptionHandler or the like in startup
