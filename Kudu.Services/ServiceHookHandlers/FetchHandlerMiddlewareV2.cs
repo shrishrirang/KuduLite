@@ -73,6 +73,7 @@ namespace Kudu.Services
                     context.Request.Body = injectedRequestStream;
                 }
 
+                Console.WriteLine(requestLog);
 
                 // CORE TODO Need to set up UseDeveloperExceptionPage, UseExceptionHandler or the like in startup
                 //context.Response.TrySkipIisCustomErrors = true;
@@ -154,6 +155,8 @@ namespace Kudu.Services
             ITracer tracer,
             out DeploymentInfoBase info)
         {
+            Console.WriteLine("\n\n\n\n\nJSON PayLoad\n\n\n\n");
+            Console.WriteLine(payload.ToString());
             foreach (var handler in serviceHookHandlers)
             {
                 DeployAction result = handler.TryParseDeploymentInfo(request, payload, targetBranch, out info);
