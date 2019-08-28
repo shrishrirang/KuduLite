@@ -71,16 +71,12 @@ namespace Kudu.Services.Web.Tracing
             try
             {
                 var tracer = TraceServices.GetRequestTracer(httpContext);
-                Console.WriteLine(@"Exception Message : " + exception.Message);
-                Console.WriteLine(@"Exception StackTrace : " + exception.StackTrace);
                 tracer.TraceError(exception);
             }
             catch (Exception ex)
             {
                 Debug.WriteLine(ex.Message);
             }
-
-            //return httpContext.Response.WriteAsync("Test Exception");
         }
 
         private void BeginRequest(HttpContext httpContext)

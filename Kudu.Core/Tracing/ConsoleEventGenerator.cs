@@ -52,7 +52,7 @@ namespace Kudu.Core.Tracing
         {
             KuduEvent kuduEvent = new KuduEvent
             {
-                level = (int)EventLevel.Warning,
+                level = (int)EventLevel.Error,
                 siteName = siteName,
                 method = method,
                 path = path,

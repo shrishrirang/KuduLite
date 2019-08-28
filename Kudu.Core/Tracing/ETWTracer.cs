@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Net.Http;
+using System.Reflection.Metadata;
 using System.Text;
 using Kudu.Contracts.Tracing;
 using Kudu.Core.Infrastructure;
@@ -46,10 +47,11 @@ namespace Kudu.Core.Tracing
                 return;
             }
 
+            string type = null;
+            string text = null;
             if (_requestMethod == HttpMethod.Get.Method)
             {
                 // ignore normal GET request body
-                string type = null;
                 if (!attributes.TryGetValue("type", out type))
                 {
                     return;
@@ -61,7 +63,8 @@ namespace Kudu.Core.Tracing
                 }
             }
 
-
+            attributes.TryGetValue("text", out text);
+           
             var strb = new StringBuilder();
             strb.AppendFormat("{0} ", message);
 
@@ -75,13 +78,25 @@ namespace Kudu.Core.Tracing
 
                 strb.AppendFormat("{0}=\"{1}\" ", attrib.Key, attrib.Value);
             }
-
-            KuduEventGenerator.Log().GenericEvent(ServerConfiguration.GetApplicationName(),
-                                         strb.ToString(),
-                                         _requestId,
-                                         string.Empty,
-                                         string.Empty,
-                                         string.Empty);
+            if (type == "error")
+            {
+                KuduEventGenerator.Log().KuduException(
+                    ServerConfiguration.GetApplicationName(),
+                    string.Empty,
+                    string.Empty,
+                    string.Empty,
+                    text,
+                    strb.ToString());
+            }
+            else
+            {
+                KuduEventGenerator.Log().GenericEvent(ServerConfiguration.GetApplicationName(),
+                                             strb.ToString(),
+                                             _requestId,
+                                             string.Empty,
+                                             string.Empty,
+                                             Constants.KuduBuild);
+            }
         }
     }
 }
