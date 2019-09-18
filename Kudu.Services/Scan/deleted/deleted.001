@@ -1,0 +1,29 @@
+﻿using Kudu.Contracts.Tracing;
+using Kudu.Core;
+using Kudu.Core.Commands;
+using Microsoft.AspNetCore.Mvc;
+using System;
+using System.Collections.Generic;
+using System.Text;
+
+
+//namespace Kudu.Services.Scan
+//{
+    public class ScanAVController : Controller
+    {
+        private readonly ICommandExecutor _commandExecutor;
+        private readonly ITracer _tracer;
+
+        public ScanAVController(ICommandExecutor commandExecutor, ITracer tracer)
+        {
+            _commandExecutor = commandExecutor;
+            _tracer = tracer;
+        }
+
+    [HttpGet]
+    public IActionResult GetSanTest()
+    {
+        return Ok("test12356789");
+    }
+}
+//}
