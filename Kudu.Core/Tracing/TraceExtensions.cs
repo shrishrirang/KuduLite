@@ -43,11 +43,6 @@ namespace Kudu.Core.Tracing
 
         public static void Trace(this ITracer tracer, string message, params object[] args)
         {
-            if (message.Contains("MS_KUDU_LOGS"))
-            {
-                return;
-            }
-
             tracer.Trace(String.Format(message, args), _empty);
         }
 
