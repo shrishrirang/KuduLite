@@ -39,7 +39,7 @@ namespace Kudu.Core.Deployment.Generator
             if (!args.SkipKuduSync)
             {
                 // Step 1: Run kudusync
-                string kuduSyncCommand = string.Format("kudusync -v 50 -f {0} -t {1} -n {2} -p {3} -i \".git;.hg;.deployment;.deploy.sh\"",
+                string kuduSyncCommand = string.Format("kudusync -v 50 -f {0} -t {1} -n {2} -p {3} -i \".git;.hg;.deployment;.deploy.sh;node_modules\"",
                     RepositoryPath,
                     context.OutputPath,
                     context.NextManifestFilePath,
