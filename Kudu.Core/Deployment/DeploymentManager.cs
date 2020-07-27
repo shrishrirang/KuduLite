@@ -730,9 +730,9 @@ namespace Kudu.Core.Deployment
                             TryTouchWatchedFile(context, deploymentInfo);
                         }
                         
-                        if (_settings.RunFromLocalZip() && deploymentInfo is ZipDeploymentInfo)
+                        if (_settings.RunFromLocalZip() && deploymentInfo is ArtifactDeploymentInfo)
                         {
-                            await PostDeploymentHelper.UpdatePackageName(deploymentInfo as ZipDeploymentInfo, _environment, logger);
+                            await PostDeploymentHelper.UpdatePackageName(deploymentInfo as ArtifactDeploymentInfo, _environment, logger);
                         }
 
                         FinishDeployment(id, deployStep);
@@ -817,7 +817,7 @@ namespace Kudu.Core.Deployment
             
             if (string.IsNullOrWhiteSpace(targetPath))
             {
-                targetPath = deploymentInfo?.TargetPath;
+                targetPath = deploymentInfo?.TargetDirectoryPath;
             }
             
             if (!string.IsNullOrWhiteSpace(targetPath))

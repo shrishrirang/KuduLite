@@ -35,7 +35,7 @@ namespace Kudu.Core.Deployment
         // Optional.
         // Path of the directory to be deployed to. The path should be relative to the wwwroot directory.
         // Example: "webapps/ROOT"
-        public string TargetPath { get; set; }
+        public string TargetDirectoryPath { get; set; }
 
         // Optional.
         // Path of the file that is watched for changes by the web server.
