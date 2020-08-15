@@ -42,5 +42,10 @@ namespace Kudu.Core.Helpers
             }
             return isXenon;
         }
+
+        public static string GetApplicationStack()
+        {
+            return System.Environment.GetEnvironmentVariable(Constants.Framework);
+        }
     }
 }

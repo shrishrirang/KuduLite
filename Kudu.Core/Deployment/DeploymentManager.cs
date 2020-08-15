@@ -293,7 +293,7 @@ namespace Kudu.Core.Deployment
             }
         }
 
-        public async Task RestartMainSiteIfNeeded(ITracer tracer, ILogger logger)
+        public async Task RestartMainSiteIfNeeded(ITracer tracer, ILogger logger, DeploymentInfoBase deploymentInfo)
         {
             // If post-deployment restart is disabled, do nothing.
             if (!_settings.RestartAppOnGitDeploy())
@@ -301,7 +301,7 @@ namespace Kudu.Core.Deployment
                 return;
             }
 
-            if (_settings.RecylePreviewEnabled())
+            if (_settings.RecylePreviewEnabled() || (deploymentInfo != null && deploymentInfo.Deployer == Constants.OneDeploy))
             {
                 logger.Log("Triggering recycle (preview mode enabled).");
                 tracer.Trace("Triggering recycle (preview mode enabled).");
@@ -632,7 +632,7 @@ namespace Kudu.Core.Deployment
                 {
                     using (tracer.Step("Determining deployment builder"))
                     {
-                        builder = _builderFactory.CreateBuilder(tracer, innerLogger, perDeploymentSettings, repository);
+                        builder = _builderFactory.CreateBuilder(tracer, innerLogger, perDeploymentSettings, repository, deploymentInfo);
                         deploymentAnalytics.ProjectType = builder.ProjectType;
                         tracer.Trace("Builder is {0}", builder.GetType().Name);
                     }
@@ -704,7 +704,7 @@ namespace Kudu.Core.Deployment
                         await builder.Build(context);
                         builder.PostBuild(context);
 
-                        await RestartMainSiteIfNeeded(tracer, logger);
+                        await RestartMainSiteIfNeeded(tracer, logger, deploymentInfo);
 
                         if (FunctionAppHelper.LooksLikeFunctionApp() && _environment.IsOnLinuxConsumption)
                         {
@@ -725,11 +725,8 @@ namespace Kudu.Core.Deployment
                             new PostDeploymentTraceListener(tracer, logger), 
                             deploymentInfo?.SyncFunctionsTriggersPath);
 
-                        if (_settings.TouchWatchedFileAfterDeployment())
-                        {
-                            TryTouchWatchedFile(context, deploymentInfo);
-                        }
-                        
+                        TouchWatchedFileIfNeeded(_settings, deploymentInfo, context);
+
                         if (_settings.RunFromLocalZip() && deploymentInfo is ArtifactDeploymentInfo)
                         {
                             await PostDeploymentHelper.UpdatePackageName(deploymentInfo as ArtifactDeploymentInfo, _environment, logger);
@@ -758,6 +755,19 @@ namespace Kudu.Core.Deployment
             {
                 // Clean the temp folder up
                 CleanBuild(tracer, buildTempPath);
+            }
+        }
+
+        private static void TouchWatchedFileIfNeeded(IDeploymentSettingsManager settings, DeploymentInfoBase deploymentInfo, DeploymentContext context)
+        {
+            if (deploymentInfo != null && !deploymentInfo.WatchedFileEnabled)
+            {
+                return;
+            }
+
+            if (!settings.RunFromZip() && settings.TouchWatchedFileAfterDeployment())
+            {
+                TryTouchWatchedFile(context, deploymentInfo);
             }
         }
 

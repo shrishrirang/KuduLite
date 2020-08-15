@@ -23,7 +23,7 @@ namespace Kudu
         public const string MappedSite = "/_app";
         public const string RepositoryPath = "repository";
         public const string ZipTempPath = "zipdeploy";
-        public const string ArtifactTempPath = "extracted";
+        public const string ArtifactStagingDirectoryName = "extracted";
 
         public const string LockPath = "locks";
         public const string DeploymentLockFile = "deployments.lock";
@@ -165,5 +165,13 @@ namespace Kudu
         public const string KuduFileShareMountPath = "/kudu-mnt";
         public const string KuduFileSharePrefix = "kudu-mnt";
         public const string EnablePersistentStorage = "ENABLE_KUDU_PERSISTENT_STORAGE";
+
+        public const string OneDeploy = "OneDeploy";
+
+        //OneDeploy Webapp Frameworks 
+        public const string Framework = "WEBSITE_STACK";
+        public const string Tomcat = "TOMCAT";
+        public const string JavaSE = "JAVASE";
+        public const string JavaEE = "JAVAEE";
     }
 }

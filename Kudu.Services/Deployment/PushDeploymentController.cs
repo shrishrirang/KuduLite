@@ -4,6 +4,7 @@ using System.IO;
 using System.IO.Compression;
 using System.Linq;
 using System.Threading.Tasks;
+using Kudu.Contracts.Deployment;
 using Kudu.Contracts.Tracing;
 using Kudu.Contracts.Settings;
 using Kudu.Core;
@@ -11,6 +12,7 @@ using Kudu.Core.Deployment;
 using Kudu.Core.Deployment.Oryx;
 using Kudu.Core.Infrastructure;
 using Kudu.Core.Tracing;
+using Kudu.Services.Arm;
 using Kudu.Services.Infrastructure;
 using Kudu.Core.SourceControl;
 using Microsoft.AspNetCore.Mvc;
@@ -21,6 +23,7 @@ using System.Net.Http;
 using System.Collections.Generic;
 using Kudu.Core.Helpers;
 using System.Threading;
+using NuGet.Protocol;
 
 namespace Kudu.Services.Deployment
 {
@@ -80,7 +83,7 @@ namespace Kudu.Services.Deployment
                     Author = author,
                     AuthorEmail = authorEmail,
                     Message = message,
-                    ArtifactURL = null,
+                    RemoteURL = null,
                     DoSyncTriggers = syncTriggers,
                     OverwriteWebsiteRunFromPackage = overwriteWebsiteRunFromPackage && _environment.IsOnLinuxConsumption
                 };
@@ -114,7 +117,7 @@ namespace Kudu.Services.Deployment
         {
             using (_tracer.Step("ZipPushDeployViaUrl"))
             {
-                string zipUrl = GetZipURLFromJSON(requestJson);
+                string zipUrl = GetArtifactURLFromJSON(requestJson);
 
                 var deploymentInfo = new ArtifactDeploymentInfo(_environment, _traceFactory)
                 {
@@ -132,7 +135,7 @@ namespace Kudu.Services.Deployment
                     Author = author,
                     AuthorEmail = authorEmail,
                     Message = message,
-                    ArtifactURL = zipUrl,
+                    RemoteURL = zipUrl,
                     DoSyncTriggers = syncTriggers,
                     OverwriteWebsiteRunFromPackage = overwriteWebsiteRunFromPackage && _environment.IsOnLinuxConsumption
                 };
@@ -179,13 +182,249 @@ namespace Kudu.Services.Deployment
                     Author = author,
                     AuthorEmail = authorEmail,
                     Message = message,
-                    ArtifactURL = null
+                    RemoteURL = null
                 };
                 return await PushDeployAsync(deploymentInfo, isAsync, HttpContext);
             }
         }
 
-        private string GetZipURLFromJSON(JObject requestObject)
+        [HttpPut]
+        public async Task<IActionResult> PushOneDeployViaURL(
+            [FromBody] JObject requestJson,
+            [FromQuery] string type = null,
+            [FromQuery] bool async = false,
+            [FromQuery] string path = null
+            )
+        {
+            using (_tracer.Step("OnePushDeploy"))
+            {
+                string artifactUrl = null;
+
+                if (!string.IsNullOrEmpty(requestJson.ToString()))
+                {
+                    artifactUrl = GetArtifactURLFromJSON(requestJson);
+                }
+
+                try
+                {
+                    if (ArmUtils.IsArmRequest(Request))
+                    {
+                        var armProperties = requestJson.Value<JObject>("properties");
+                        type = armProperties.Value<string>("type");
+                        async = armProperties.Value<bool>("async");
+                        path = armProperties.Value<string>("path");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    //ArmUtils.CreateErrorResponse currently not ported over to KuduLite
+                    //return ArmUtils.CreateErrorResponse(Request, StatusCodes.Status400BadRequest, ex);
+                    return StatusCode(StatusCodes.Status400BadRequest, ex);
+                }
+
+                ArtifactType artifactType = ArtifactType.Invalid;
+                try
+                {
+                    artifactType = (ArtifactType)Enum.Parse(typeof(ArtifactType), type, ignoreCase: true);
+                }
+                catch
+                {
+                    return StatusCode(StatusCodes.Status400BadRequest, $"type='{type}' not recognized");
+                }
+
+                var deploymentInfo = new ArtifactDeploymentInfo(_environment, _traceFactory)
+                {
+                    AllowDeploymentWhileScmDisabled = true,
+                    Deployer = Constants.OneDeploy,
+                    IsContinuous = false,
+                    AllowDeferredDeployment = false,
+                    IsReusable = false,
+                    TargetChangeset = DeploymentManager.CreateTemporaryChangeSet(message: "OneDeploy"),
+                    CommitId = null,
+                    RepositoryType = RepositoryType.None,
+                    Fetch = OneDeployFetch,
+                    DoFullBuildByDefault = false,
+                    Message = "OneDeploy",
+                    WatchedFileEnabled = false,
+                    RemoteURL = artifactUrl
+                };
+
+                var setInfoError = SetDeploymentInfoForDeployType(deploymentInfo, type, path, artifactType);
+                if (setInfoError != null)
+                {
+                    return setInfoError;
+                }
+
+                //return await PushDeployAsync(deploymentInfo, async, requestObject, type);
+                return await PushDeployAsync(deploymentInfo, async, HttpContext);
+            }
+        }
+
+
+        [HttpPost]
+        [DisableRequestSizeLimit]
+        [DisableFormValueModelBinding]
+        public async Task<IActionResult> PushOneDeploy(
+            [FromQuery] string type = null,
+            [FromQuery] bool async = false,
+            [FromQuery] string path = null,
+            [FromQuery] bool syncTriggers = false
+            )
+        {
+            using (_tracer.Step("OnePushDeploy"))
+            {
+                ArtifactType artifactType = ArtifactType.Invalid;
+                try
+                {
+                    artifactType = (ArtifactType)Enum.Parse(typeof(ArtifactType), type, ignoreCase: true);
+                }
+                catch
+                {
+                    return StatusCode(StatusCodes.Status400BadRequest, $"type='{type}' not recognized");
+                }
+                var deploymentInfo = new ArtifactDeploymentInfo(_environment, _traceFactory)
+                {
+                    AllowDeploymentWhileScmDisabled = true,
+                    Deployer = Constants.OneDeploy,
+                    IsContinuous = false,
+                    AllowDeferredDeployment = false,
+                    IsReusable = false,
+                    TargetChangeset = DeploymentManager.CreateTemporaryChangeSet(message: "OneDeploy"),
+                    CommitId = null,
+                    RepositoryType = RepositoryType.None,
+                    Fetch = OneDeployFetch,
+                    DoFullBuildByDefault = false,
+                    Message = "OneDeploy",
+                    WatchedFileEnabled = false,
+                    RemoteURL = null,
+                    DoSyncTriggers = syncTriggers,
+                };
+
+                var setInfoError = SetDeploymentInfoForDeployType(deploymentInfo, type, path, artifactType);
+                if (setInfoError != null)
+                {
+                    return setInfoError;
+                }
+
+                //return await PushDeployAsync(deploymentInfo, async, requestObject, type);
+                return await PushDeployAsync(deploymentInfo, async, HttpContext);
+            }
+        }
+
+        private ObjectResult SetDeploymentInfoForDeployType(ArtifactDeploymentInfo deploymentInfo, string deployType, string path, ArtifactType artifactType)
+        {
+            var websiteStack = EnvironmentHelper.GetApplicationStack();
+
+            switch (artifactType)
+            {
+                case ArtifactType.War:
+                    if (!string.Equals(websiteStack, Constants.Tomcat, StringComparison.OrdinalIgnoreCase))
+                    {
+                        return StatusCode(StatusCodes.Status400BadRequest, $"WAR files cannot be deployed to {websiteStack}");
+                    }
+
+                    // Support for legacy war deployments
+                    if(!string.IsNullOrWhiteSpace(path))
+                    {
+                        deploymentInfo.TargetDirectoryPath = path;
+                        deploymentInfo.Fetch = LocalZipHandler;
+                        artifactType = ArtifactType.Zip;
+                    }
+                    else
+                    {
+                        // For type=war, the target file is app.war
+                        // As we want app.war to be deployed to wwwroot, no need to configure TargetDirectoryPath
+                        deploymentInfo.TargetFileName = "app.war";
+                    }
+
+                    break;
+
+                case ArtifactType.Jar:
+                    if (!string.Equals(websiteStack, Constants.JavaSE, StringComparison.OrdinalIgnoreCase))
+                    {
+                        return StatusCode(StatusCodes.Status400BadRequest, $"JAR files cannot be deployed to {websiteStack}");
+                    }
+
+                    deploymentInfo.TargetFileName = "app.jar";
+
+                    break;
+
+                case ArtifactType.Lib:
+                    if (string.IsNullOrWhiteSpace(path))
+                    {
+                        return StatusCode(StatusCodes.Status400BadRequest, $"Path must be defined for library deployments");
+                    }
+
+                    SetTargetFromPath(deploymentInfo, path);
+
+                    break;
+
+                case ArtifactType.Startup:
+
+                    // Set the TargetDirectoryPath to /home for startup files
+                    deploymentInfo.TargetDirectoryPath = _environment.RootPath;
+                    deploymentInfo.TargetFileName = GetStartupFileName(deploymentInfo);
+
+                    break;
+
+                case ArtifactType.Ear:
+
+                    // Currently not supported on Windows but here for future use
+                    if (!string.Equals(websiteStack, Constants.JavaEE, StringComparison.OrdinalIgnoreCase))
+                    {
+                        return StatusCode(StatusCodes.Status400BadRequest, $"JAR files cannot be deployed to {websiteStack}");
+                    }
+
+                    deploymentInfo.TargetFileName = "app.ear";
+
+                    break;
+
+                case ArtifactType.Static:
+                    if (string.IsNullOrWhiteSpace(path))
+                    {
+                        return StatusCode(StatusCodes.Status400BadRequest, $"Path must be defined for static file deployments");
+                    }
+                    SetTargetFromPath(deploymentInfo, path);
+
+                    break;
+
+                case ArtifactType.Zip:
+                    deploymentInfo.Fetch = LocalZipHandler;
+
+                    break;
+
+                default:
+                    if (string.IsNullOrWhiteSpace(deployType))
+                    {
+                        return StatusCode(StatusCodes.Status400BadRequest, $"Deployment type not provided");
+                    }
+                    return StatusCode(StatusCodes.Status400BadRequest, $"Deployment type {deployType} not valid");
+            }
+            return null;
+        }
+
+        private static void SetTargetFromPath(DeploymentInfoBase deploymentInfo, string path)
+        {
+            //When the file name is unknown, then deploymentInfo.FileName must be derived from the path query string
+            //Paths are rooted at wwwroot so path=lib\lib1.jar would result in a deployment to D:\home\site\wwwroot\lib\lib1.jar
+            //Paths must also include a file name
+            deploymentInfo.TargetFileName = Path.GetFileName(path);
+
+            //If a path is provided, then deploymentInfo.TargetPath must also be derived from the path query string
+            deploymentInfo.TargetDirectoryPath = Path.GetDirectoryName(path);
+        }
+
+        private static string GetStartupFileName(DeploymentInfoBase deploymentInfo)
+        {
+            if (OSDetector.IsOnWindows())
+            {
+                return "startup.bat";
+            }
+            return "startup.sh";
+
+        }
+
+        private string GetArtifactURLFromJSON(JObject requestObject)
         {
             using (_tracer.Step("Reading the zip URL from the request JSON"))
             {
@@ -213,15 +452,16 @@ namespace Kudu.Services.Deployment
         }
 
         private async Task<IActionResult> PushDeployAsync(ArtifactDeploymentInfo deploymentInfo, bool isAsync,
-            HttpContext context)
+            HttpContext context, ArtifactType artifactType = ArtifactType.Zip)
         {
-
-            var zipFilePath = Path.Combine(_environment.ZipTempPath, Guid.NewGuid() + ".zip");
             if (_settings.RunFromLocalZip())
             {
                 await WriteSitePackageZip(deploymentInfo, _tracer);
             }
-            else
+
+            // For zip artifacts (zipdeploy, wardeploy, onedeploy with type=zip), copy the request body in a temp zip file.
+            // It will be extracted to the appropriate directory by the Fetch handler
+            else if (deploymentInfo.Deployer != Constants.OneDeploy || artifactType == ArtifactType.Zip)
             {
                 var oryxManifestFile = Path.Combine(_environment.WebRootPath, "oryx-manifest.toml");
                 if (FileSystemHelpers.FileExists(oryxManifestFile))
@@ -247,58 +487,54 @@ namespace Kudu.Services.Deployment
                     // best effort
                 }
 
-                using (_tracer.Step("Writing zip file to {0}", zipFilePath))
+                var artifactFilePath = Path.Combine(_environment.ZipTempPath, Guid.NewGuid() + ".zip");
+                using (_tracer.Step("Writing zip file to {0}", artifactFilePath))
                 {
                     if (!string.IsNullOrEmpty(context.Request.ContentType) &&
                         context.Request.ContentType.Contains("multipart/form-data", StringComparison.OrdinalIgnoreCase))
                     {
                         FormValueProvider formModel;
-                        using (_tracer.Step("Writing zip file to {0}", zipFilePath))
+                        using (_tracer.Step("Writing zip file to {0}", artifactFilePath))
                         {
-                            using (var file = System.IO.File.Create(zipFilePath))
+                            using (var file = System.IO.File.Create(artifactFilePath))
                             {
                                 formModel = await Request.StreamFile(file);
                             }
                         }
                     }
-                    else if (deploymentInfo.ArtifactURL != null)
+                    else if (deploymentInfo.RemoteURL != null)
                     {
-                        using (_tracer.Step("Writing zip file from packageUri to {0}", zipFilePath))
+                        using (_tracer.Step("Writing zip file from packageUri to {0}", artifactFilePath))
                         {
-                            using (var httpClient = new HttpClient())
-                            using (var fileStream = new FileStream(zipFilePath,
-                                FileMode.Create, FileAccess.Write, FileShare.None, bufferSize: 4096, useAsync: true))
-                            {
-                                var zipUrlRequest = new HttpRequestMessage(HttpMethod.Get, deploymentInfo.ArtifactURL);
-                                var zipUrlResponse = await httpClient.SendAsync(zipUrlRequest);
-
-                                try
-                                {
-                                    zipUrlResponse.EnsureSuccessStatusCode();
-                                }
-                                catch (HttpRequestException hre)
-                                {
-                                    _tracer.TraceError(hre, "Failed to get file from packageUri {0}", deploymentInfo.ArtifactURL);
-                                    throw;
-                                }
-
-                                using (var content = await zipUrlResponse.Content.ReadAsStreamAsync())
-                                {
-                                    await content.CopyToAsync(fileStream);
-                                }
-                            }
+                            await CopyArtifactFromURL(deploymentInfo, artifactFilePath);
                         }
                     }
                     else
                     {
-                        using (var file = System.IO.File.Create(zipFilePath))
+                        using (var file = System.IO.File.Create(artifactFilePath))
                         {
                             await Request.Body.CopyToAsync(file);
                         }
                     }
                 }
+                deploymentInfo.RepositoryUrl = artifactFilePath;
+            }
+            // Copy the request body to a temp file.
+            // It will be moved to the appropriate directory by the Fetch handler
+            else if (deploymentInfo.Deployer == Constants.OneDeploy)
+            {
+                var artifactTempPath = Path.Combine(_environment.ZipTempPath, deploymentInfo.TargetFileName);
 
-                deploymentInfo.RepositoryUrl = zipFilePath;
+                using (_tracer.Step("Writing zip file to {0}", artifactTempPath))
+                {
+                    using (var file = System.IO.File.Create(artifactTempPath))
+                    {
+                        await Request.Body.CopyToAsync(file);
+                    }
+                }
+
+
+                deploymentInfo.RepositoryUrl = artifactTempPath;
             }
 
             var result =
@@ -337,6 +573,31 @@ namespace Kudu.Services.Deployment
             }
         }
 
+        private async Task CopyArtifactFromURL(ArtifactDeploymentInfo deploymentInfo, string artifactFilePath)
+        {
+            using (var httpClient = new HttpClient())
+            using (var fileStream = new FileStream(artifactFilePath,
+                FileMode.Create, FileAccess.Write, FileShare.None, bufferSize: 4096, useAsync: true))
+            {
+                var ArtifactUrlRequest = new HttpRequestMessage(HttpMethod.Get, deploymentInfo.RemoteURL);
+                var ArtifactUrlResponse = await httpClient.SendAsync(ArtifactUrlRequest);
+
+                try
+                {
+                    ArtifactUrlResponse.EnsureSuccessStatusCode();
+                }
+                catch (HttpRequestException hre)
+                {
+                    _tracer.TraceError(hre, "Failed to get file from packageUri {0}", deploymentInfo.RemoteURL);
+                    throw;
+                }
+
+                using (var content = await ArtifactUrlResponse.Content.ReadAsStreamAsync())
+                {
+                    await content.CopyToAsync(fileStream);
+                }
+            }
+        }
 
         private Task LocalZipFetch(IRepository repository, DeploymentInfoBase deploymentInfo, string targetBranch,
             ILogger logger, ITracer tracer)
@@ -403,6 +664,63 @@ namespace Kudu.Services.Deployment
             {
                 await LocalZipFetch(repository, deploymentInfo, targetBranch, logger, tracer);
             }
+        }
+
+        // OneDeploy Fetch handler for non-zip artifacts.
+        // For zip files, OneDeploy uses the LocalZipHandler Fetch handler
+        // NOTE: Do not access the request stream as it may have been closed during asynchronous scenarios
+        private async Task OneDeployFetch(IRepository repository, DeploymentInfoBase deploymentInfo, string targetBranch, ILogger logger, ITracer tracer)
+        {
+            var artifactDeploymentInfo = (ArtifactDeploymentInfo)deploymentInfo;
+
+            // This is the path where the artifact being deployed is staged, before it is copied to the final target location
+            var artifactDirectoryStagingPath = repository.RepositoryPath;
+
+            var targetInfo = FileSystemHelpers.DirectoryInfoFromDirectoryName(artifactDirectoryStagingPath);
+            if (targetInfo.Exists)
+            {
+                // If tempDirPath already exists, rename it so we can delete it later 
+                var moveTarget = Path.Combine(targetInfo.Parent.FullName, Path.GetRandomFileName());
+                using (tracer.Step(string.Format("Renaming ({0}) to ({1})", targetInfo.FullName, moveTarget)))
+                {
+                    targetInfo.MoveTo(moveTarget);
+                }
+            }
+
+            // Create artifact staging directory before later use 
+            Directory.CreateDirectory(artifactDirectoryStagingPath);
+            var artifactFileStagingPath = Path.Combine(artifactDirectoryStagingPath, deploymentInfo.TargetFileName);
+
+            // If RemoteUrl is non-null, it means the content needs to be downloaded from the Url source to the staging location
+            // Else, it had been downloaded already so we just move the downloaded file to the staging location
+            if (!string.IsNullOrWhiteSpace(artifactDeploymentInfo.RemoteURL))
+            {
+                using (tracer.Step("Saving request content to {0}", artifactFileStagingPath))
+                {
+                    var copyTask = CopyArtifactFromURL(artifactDeploymentInfo, artifactFileStagingPath);
+                    //var copyTask = content.CopyToAsync(artifactFileStagingPath, tracer);
+
+                    // Deletes all files and directories except for artifactFileStagingPath and artifactDirectoryStagingPath
+                    var cleanTask = Task.Run(() => DeleteFilesAndDirsExcept(artifactFileStagingPath, artifactDirectoryStagingPath, tracer));
+
+                    // Lets the copy and cleanup tasks to run in parallel and wait for them to finish 
+                    await Task.WhenAll(copyTask, cleanTask);
+                }
+            }
+            else
+            {
+                var srcInfo = FileSystemHelpers.DirectoryInfoFromDirectoryName(deploymentInfo.RepositoryUrl);
+                using (tracer.Step(string.Format("Moving {0} to {1}", targetInfo.FullName, artifactFileStagingPath)))
+                {
+                    srcInfo.MoveTo(artifactFileStagingPath);
+                }
+
+                // Deletes all files and directories except for artifactFileStagingPath and artifactDirectoryStagingPath
+                DeleteFilesAndDirsExcept(artifactFileStagingPath, artifactDirectoryStagingPath, tracer);
+            }
+
+            // The deployment flow expects at least 1 commit in the IRepository commit, refer to CommitRepo() for more info
+            CommitRepo(repository, artifactDeploymentInfo);
         }
 
         private void ExtractTriggers(IRepository repository, ArtifactDeploymentInfo zipDeploymentInfo)

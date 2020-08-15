@@ -20,7 +20,7 @@ namespace Kudu.Core.Deployment
         {
             // Artifact "repository" does not conflict with other types, including NoRepository,
             // so there's no call to EnsureRepository
-            var path = Path.Combine(_environment.ZipTempPath, Constants.ArtifactTempPath);
+            var path = Path.Combine(_environment.ZipTempPath, Constants.ArtifactStagingDirectoryName);
             return new NullRepository(path, _traceFactory);
         }
 
@@ -33,7 +33,7 @@ namespace Kudu.Core.Deployment
         // Optional file name. Used by certain features like run-from-zip.
         public string FileName { get; set; }
 
-        // This is used when getting the zipfile from the zipURL
-        public string ArtifactURL { get; set; }
+        // This is used when getting the artifact file from the remote URL
+        public string RemoteURL { get; set; }
     }
 }
