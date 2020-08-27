@@ -64,7 +64,7 @@ namespace Kudu.Services.Deployment
         {
             using (_tracer.Step("ZipPushDeploy"))
             {
-                var deploymentInfo = new ZipDeploymentInfo(_environment, _traceFactory)
+                var deploymentInfo = new ArtifactDeploymentInfo(_environment, _traceFactory)
                 {
                     AllowDeploymentWhileScmDisabled = true,
                     Deployer = deployer,
@@ -80,7 +80,7 @@ namespace Kudu.Services.Deployment
                     Author = author,
                     AuthorEmail = authorEmail,
                     Message = message,
-                    ZipURL = null,
+                    RemoteURL = null,
                     DoSyncTriggers = syncTriggers,
                     OverwriteWebsiteRunFromPackage = overwriteWebsiteRunFromPackage && _environment.IsOnLinuxConsumption
                 };
@@ -90,7 +90,7 @@ namespace Kudu.Services.Deployment
                     // This is used if the deployment is Run-From-Zip
                     // the name of the deployed file in D:\home\data\SitePackages\{name}.zip is the 
                     // timestamp in the format yyyMMddHHmmss. 
-                    deploymentInfo.ZipName = $"{DateTime.UtcNow.ToString("yyyyMMddHHmmss")}.zip";
+                    deploymentInfo.ArtifactFileName = $"{DateTime.UtcNow.ToString("yyyyMMddHHmmss")}.zip";
                     // This is also for Run-From-Zip where we need to extract the triggers
                     // for post deployment sync triggers.
                     deploymentInfo.SyncFunctionsTriggersPath =
@@ -116,7 +116,7 @@ namespace Kudu.Services.Deployment
             {
                 string zipUrl = GetZipURLFromJSON(requestJson);
 
-                var deploymentInfo = new ZipDeploymentInfo(_environment, _traceFactory)
+                var deploymentInfo = new ArtifactDeploymentInfo(_environment, _traceFactory)
                 {
                     AllowDeploymentWhileScmDisabled = true,
                     Deployer = deployer,
@@ -132,7 +132,7 @@ namespace Kudu.Services.Deployment
                     Author = author,
                     AuthorEmail = authorEmail,
                     Message = message,
-                    ZipURL = zipUrl,
+                    RemoteURL = zipUrl,
                     DoSyncTriggers = syncTriggers,
                     OverwriteWebsiteRunFromPackage = overwriteWebsiteRunFromPackage && _environment.IsOnLinuxConsumption
                 };
@@ -159,11 +159,11 @@ namespace Kudu.Services.Deployment
                     appName = "ROOT";
                 }
 
-                var deploymentInfo = new ZipDeploymentInfo(_environment, _traceFactory)
+                var deploymentInfo = new ArtifactDeploymentInfo(_environment, _traceFactory)
                 {
                     AllowDeploymentWhileScmDisabled = true,
                     Deployer = deployer,
-                    TargetPath = Path.Combine("webapps", appName),
+                    TargetDirectoryPath = Path.Combine("webapps", appName),
                     WatchedFilePath = Path.Combine("WEB-INF", "web.xml"),
                     IsContinuous = false,
                     AllowDeferredDeployment = false,
@@ -179,7 +179,7 @@ namespace Kudu.Services.Deployment
                     Author = author,
                     AuthorEmail = authorEmail,
                     Message = message,
-                    ZipURL = null
+                    RemoteURL = null
                 };
                 return await PushDeployAsync(deploymentInfo, isAsync, HttpContext);
             }
@@ -212,7 +212,7 @@ namespace Kudu.Services.Deployment
             }
         }
 
-        private async Task<IActionResult> PushDeployAsync(ZipDeploymentInfo deploymentInfo, bool isAsync,
+        private async Task<IActionResult> PushDeployAsync(ArtifactDeploymentInfo deploymentInfo, bool isAsync,
             HttpContext context)
         {
 
@@ -261,7 +261,7 @@ namespace Kudu.Services.Deployment
                             }
                         }
                     }
-                    else if (deploymentInfo.ZipURL != null)
+                    else if (deploymentInfo.RemoteURL != null)
                     {
                         using (_tracer.Step("Writing zip file from packageUri to {0}", zipFilePath))
                         {
@@ -269,7 +269,7 @@ namespace Kudu.Services.Deployment
                             using (var fileStream = new FileStream(zipFilePath,
                                 FileMode.Create, FileAccess.Write, FileShare.None, bufferSize: 4096, useAsync: true))
                             {
-                                var zipUrlRequest = new HttpRequestMessage(HttpMethod.Get, deploymentInfo.ZipURL);
+                                var zipUrlRequest = new HttpRequestMessage(HttpMethod.Get, deploymentInfo.RemoteURL);
                                 var zipUrlResponse = await httpClient.SendAsync(zipUrlRequest);
 
                                 try
@@ -278,7 +278,7 @@ namespace Kudu.Services.Deployment
                                 }
                                 catch (HttpRequestException hre)
                                 {
-                                    _tracer.TraceError(hre, "Failed to get file from packageUri {0}", deploymentInfo.ZipURL);
+                                    _tracer.TraceError(hre, "Failed to get file from packageUri {0}", deploymentInfo.RemoteURL);
                                     throw;
                                 }
 
@@ -341,7 +341,7 @@ namespace Kudu.Services.Deployment
         private Task LocalZipFetch(IRepository repository, DeploymentInfoBase deploymentInfo, string targetBranch,
             ILogger logger, ITracer tracer)
         {
-            var zipDeploymentInfo = (ZipDeploymentInfo) deploymentInfo;
+            var zipDeploymentInfo = (ArtifactDeploymentInfo) deploymentInfo;
 
             // For this kind of deployment, RepositoryUrl is a local path.
             var sourceZipFile = zipDeploymentInfo.RepositoryUrl;
@@ -393,11 +393,11 @@ namespace Kudu.Services.Deployment
         private async Task LocalZipHandler(IRepository repository, DeploymentInfoBase deploymentInfo,
             string targetBranch, ILogger logger, ITracer tracer)
         {
-            if (_settings.RunFromLocalZip() && deploymentInfo is ZipDeploymentInfo)
+            if (_settings.RunFromLocalZip() && deploymentInfo is ArtifactDeploymentInfo)
             {
                 // If this is a Run-From-Zip deployment, then we need to extract function.json
                 // from the zip file into path zipDeploymentInfo.SyncFunctionsTrigersPath
-                ExtractTriggers(repository, deploymentInfo as ZipDeploymentInfo);
+                ExtractTriggers(repository, deploymentInfo as ArtifactDeploymentInfo);
             }
             else
             {
@@ -405,13 +405,13 @@ namespace Kudu.Services.Deployment
             }
         }
 
-        private void ExtractTriggers(IRepository repository, ZipDeploymentInfo zipDeploymentInfo)
+        private void ExtractTriggers(IRepository repository, ArtifactDeploymentInfo zipDeploymentInfo)
         {
             FileSystemHelpers.EnsureDirectory(zipDeploymentInfo.SyncFunctionsTriggersPath);
             // Loading the zip file depends on how fast the file system is.
             // Tested Azure Files share with a zip containing 120k files (160 MBs)
             // takes 20 seconds to load. On my machine it takes 900 msec.
-            using (var zip = ZipFile.OpenRead(Path.Combine(_environment.SitePackagesPath, zipDeploymentInfo.ZipName)))
+            using (var zip = ZipFile.OpenRead(Path.Combine(_environment.SitePackagesPath, zipDeploymentInfo.ArtifactFileName)))
             {
                 var entries = zip.Entries
                     // Only select host.json, proxies.json, or function.json that are from top level directories only
@@ -439,7 +439,7 @@ namespace Kudu.Services.Deployment
             }
         }
 
-        private static void CommitRepo(IRepository repository, ZipDeploymentInfo zipDeploymentInfo)
+        private static void CommitRepo(IRepository repository, ArtifactDeploymentInfo zipDeploymentInfo)
         {
             // Needed in order for repository.GetChangeSet() to work.
             // Similar to what OneDriveHelper and DropBoxHelper do.
@@ -463,9 +463,9 @@ namespace Kudu.Services.Deployment
             }
         }
 
-        private async Task WriteSitePackageZip(ZipDeploymentInfo zipDeploymentInfo, ITracer tracer)
+        private async Task WriteSitePackageZip(ArtifactDeploymentInfo zipDeploymentInfo, ITracer tracer)
         {
-            var filePath = Path.Combine(_environment.SitePackagesPath, zipDeploymentInfo.ZipName);
+            var filePath = Path.Combine(_environment.SitePackagesPath, zipDeploymentInfo.ArtifactFileName);
             // Make sure D:\home\data\SitePackages exists
             FileSystemHelpers.EnsureDirectory(_environment.SitePackagesPath);
             using (_tracer.Step("Writing zip file to {0}", filePath))
