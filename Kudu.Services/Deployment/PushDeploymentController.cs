@@ -22,6 +22,8 @@ using System.Collections.Generic;
 using Kudu.Core.Helpers;
 using System.Threading;
 using Kudu.Contracts.Deployment;
+using Kudu.Services.Arm;
+using System.Text;
 
 namespace Kudu.Services.Deployment
 {
@@ -115,7 +117,7 @@ namespace Kudu.Services.Deployment
         {
             using (_tracer.Step("ZipPushDeployViaUrl"))
             {
-                string zipUrl = GetZipURLFromJSON(requestJson);
+                string zipUrl = GetArtifactURLFromJSON(requestJson);
 
                 var deploymentInfo = new ArtifactDeploymentInfo(_environment, _traceFactory)
                 {
@@ -213,8 +215,41 @@ namespace Kudu.Services.Deployment
             [FromQuery] string stack = null
             )
         {
+            string remoteArtifactUrl = null;
+
             using (_tracer.Step("OneDeploy"))
             {
+                try
+                {
+                    if (!string.IsNullOrWhiteSpace(Request.ContentType) && Request.ContentType.Equals("application/json", StringComparison.OrdinalIgnoreCase))
+                    {
+                        string jsonString;
+                        using (StreamReader reader = new StreamReader(Request.Body, Encoding.UTF8))
+                        {
+                            jsonString = await reader.ReadToEndAsync();
+                        }
+
+                        var requestJson = JObject.Parse(jsonString);
+
+                        if (ArmUtils.IsArmRequest(Request)) // TODO(shrirs): Check if this works
+                        {
+                            requestJson = requestJson.Value<JObject>("properties");
+
+                            type = requestJson.Value<string>("type");
+                            async = requestJson.Value<bool>("async");
+                            path = requestJson.Value<string>("path");
+                            restart = requestJson.Value<bool>("restart");
+                            stack = requestJson.Value<string>("stack");
+                        }
+
+                        remoteArtifactUrl = GetArtifactURLFromJSON(requestJson);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    return StatusCode(StatusCodes.Status400BadRequest, ex);
+                }
+
                 //
                 // 'async' is not a CSharp-ish variable name. And although it is a valid variable name, some
                 // IDEs confuse it to be the 'async' keyword in C#.
@@ -234,6 +269,7 @@ namespace Kudu.Services.Deployment
                     TargetChangeset = DeploymentManager.CreateTemporaryChangeSet(message: "OneDeploy"),
                     CommitId = null,
                     RepositoryType = RepositoryType.None,
+                    RemoteURL = remoteArtifactUrl,
                     Fetch = OneDeployFetch,
                     DoFullBuildByDefault = false,
                     Message = "OneDeploy",
@@ -371,7 +407,7 @@ namespace Kudu.Services.Deployment
             return OSDetector.IsOnWindows() ? "startup.bat" : "startup.sh";
         }
 
-        private string GetZipURLFromJSON(JObject requestObject)
+        private string GetArtifactURLFromJSON(JObject requestObject)
         {
             using (_tracer.Step("Reading the zip URL from the request JSON"))
             {
@@ -401,8 +437,18 @@ namespace Kudu.Services.Deployment
         private async Task<IActionResult> PushDeployAsync(ArtifactDeploymentInfo deploymentInfo, bool isAsync,
             HttpContext context, ArtifactType artifactType = ArtifactType.Zip)
         {
+            // TODO(shrirs): remove artifactType=zip param.
 
-            var zipFilePath = Path.Combine(_environment.ZipTempPath, Guid.NewGuid() + ".zip");
+            string artifactTempPath;
+            if (string.IsNullOrWhiteSpace(deploymentInfo.TargetFileName))
+            {
+                artifactTempPath = Path.Combine(_environment.ZipTempPath, Guid.NewGuid() + ".zip");
+            }
+            else
+            {
+                artifactTempPath = Path.Combine(_environment.ZipTempPath, deploymentInfo.TargetFileName);
+            }
+
             if (_settings.RunFromLocalZip())
             {
                 await WriteSitePackageZip(deploymentInfo, _tracer);
@@ -433,28 +479,26 @@ namespace Kudu.Services.Deployment
                     // best effort
                 }
 
-                using (_tracer.Step("Writing artifact to {0}", zipFilePath))
+                using (_tracer.Step("Writing artifact to {0}", artifactTempPath))
                 {
                     if (!string.IsNullOrEmpty(context.Request.ContentType) &&
                         context.Request.ContentType.Contains("multipart/form-data", StringComparison.OrdinalIgnoreCase))
                     {
                         FormValueProvider formModel;
-                        using (_tracer.Step("Writing zip file to {0}", zipFilePath))
+                        using (_tracer.Step("Writing zip file to {0}", artifactTempPath))
                         {
-                            using (var file = System.IO.File.Create(zipFilePath))
+                            using (var file = System.IO.File.Create(artifactTempPath))
                             {
                                 formModel = await Request.StreamFile(file);
                             }
-                            
-                            deploymentInfo.RepositoryUrl = zipFilePath;
                         }
                     }
                     else if (deploymentInfo.RemoteURL != null)
                     {
-                        using (_tracer.Step("Writing zip file from packageUri to {0}", zipFilePath))
+                        using (_tracer.Step("Writing zip file from packageUri to {0}", artifactTempPath))
                         {
                             using (var httpClient = new HttpClient())
-                            using (var fileStream = new FileStream(zipFilePath,
+                            using (var fileStream = new FileStream(artifactTempPath,
                                 FileMode.Create, FileAccess.Write, FileShare.None, bufferSize: 4096, useAsync: true))
                             {
                                 var zipUrlRequest = new HttpRequestMessage(HttpMethod.Get, deploymentInfo.RemoteURL);
@@ -475,36 +519,17 @@ namespace Kudu.Services.Deployment
                                     await content.CopyToAsync(fileStream);
                                 }
                             }
-
-                            deploymentInfo.RepositoryUrl = zipFilePath;
                         }
                     }
-                    // For zip artifacts (zipdeploy, wardeploy, onedeploy with type=zip), copy the request body in a temp zip file.
-                    // It will be extracted to the appropriate directory by the Fetch handler
-                    else if (artifactType == ArtifactType.Zip)
+                    else
                     {
-                        using (var file = System.IO.File.Create(zipFilePath))
+                        using (var file = System.IO.File.Create(artifactTempPath))
                         {
                             await Request.Body.CopyToAsync(file);
                         }
-
-                        deploymentInfo.RepositoryUrl = zipFilePath;
                     }
-                    // Copy the request body to a temp file.
-                    // It will be moved to the appropriate directory by the Fetch handler
-                    else if (deploymentInfo.Deployer == Constants.OneDeploy)
-                    {
-                        var artifactTempPath = Path.Combine(_environment.ZipTempPath, deploymentInfo.TargetFileName);
-                        using (_tracer.Step("Saving request content to {0}", artifactTempPath))
-                        {
-                            using (var file = System.IO.File.Create(artifactTempPath))
-                            {
-                                await Request.Body.CopyToAsync(file);
-                            }
 
-                            deploymentInfo.RepositoryUrl = artifactTempPath;
-                        }
-                    }
+                    deploymentInfo.RepositoryUrl = artifactTempPath;
                 }
             }
 
@@ -637,23 +662,24 @@ namespace Kudu.Services.Deployment
                 Directory.CreateDirectory(artifactDirectoryStagingPath);
                 var artifactFileStagingPath = Path.Combine(artifactDirectoryStagingPath, deploymentInfo.TargetFileName);
 
+                // TODO(shrirs): remove this if not needed
                 // If RemoteUrl is non-null, it means the content needs to be downloaded from the Url source to the staging location
                 // Else, it had been downloaded already so we just move the downloaded file to the staging location
-                if (!string.IsNullOrWhiteSpace(artifactDeploymentInfo.RemoteURL))
-                {
-                    using (tracer.Step("Saving request content to {0}", artifactFileStagingPath))
-                    {
-                        // TODO(shrirs) var content = await DeploymentHelper.GetArtifactContentFromURL(artifactDeploymentInfo, tracer);
-                        var copyTask = Task.CompletedTask; // TODO(shrirs) content.CopyToAsync(artifactFileStagingPath, tracer);
+                //if (!string.IsNullOrWhiteSpace(artifactDeploymentInfo.RemoteURL))
+                //{
+                //    using (tracer.Step("Saving request content to {0}", artifactFileStagingPath))
+                //    {
+                //        // TODO(shrirs) var content = await DeploymentHelper.GetArtifactContentFromURL(artifactDeploymentInfo, tracer);
+                //        var copyTask = Task.CompletedTask; // TODO(shrirs) content.CopyToAsync(artifactFileStagingPath, tracer);
 
-                        // Deletes all files and directories except for artifactFileStagingPath and artifactDirectoryStagingPath
-                        var cleanTask = Task.Run(() => DeleteFilesAndDirsExcept(artifactFileStagingPath, artifactDirectoryStagingPath, tracer));
+                //        // Deletes all files and directories except for artifactFileStagingPath and artifactDirectoryStagingPath
+                //        var cleanTask = Task.Run(() => DeleteFilesAndDirsExcept(artifactFileStagingPath, artifactDirectoryStagingPath, tracer));
 
-                        // Lets the copy and cleanup tasks to run in parallel and wait for them to finish 
-                        await Task.WhenAll(copyTask, cleanTask);
-                    }
-                }
-                else
+                //        // Lets the copy and cleanup tasks to run in parallel and wait for them to finish 
+                //        await Task.WhenAll(copyTask, cleanTask);
+                //    }
+                //}
+                //else
                 {
                     var srcInfo = FileSystemHelpers.DirectoryInfoFromDirectoryName(deploymentInfo.RepositoryUrl);
                     using (tracer.Step(string.Format("Moving {0} to {1}", targetInfo.FullName, artifactFileStagingPath)))
