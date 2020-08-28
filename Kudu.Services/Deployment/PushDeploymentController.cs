@@ -345,7 +345,7 @@ namespace Kudu.Services.Deployment
                         return StatusCode(StatusCodes.Status400BadRequest, $"Artifact type '{artifactType}' not supported");
                 }
 
-                return await PushDeployAsync(deploymentInfo, isAsync, HttpContext);
+                return await PushDeployAsync(deploymentInfo, isAsync, HttpContext, artifactType);
             }
         }
 
@@ -399,7 +399,7 @@ namespace Kudu.Services.Deployment
         }
 
         private async Task<IActionResult> PushDeployAsync(ArtifactDeploymentInfo deploymentInfo, bool isAsync,
-            HttpContext context)
+            HttpContext context, ArtifactType artifactType = ArtifactType.Zip)
         {
 
             var zipFilePath = Path.Combine(_environment.ZipTempPath, Guid.NewGuid() + ".zip");
@@ -433,7 +433,7 @@ namespace Kudu.Services.Deployment
                     // best effort
                 }
 
-                using (_tracer.Step("Writing zip file to {0}", zipFilePath))
+                using (_tracer.Step("Writing artifact to {0}", zipFilePath))
                 {
                     if (!string.IsNullOrEmpty(context.Request.ContentType) &&
                         context.Request.ContentType.Contains("multipart/form-data", StringComparison.OrdinalIgnoreCase))
@@ -445,6 +445,8 @@ namespace Kudu.Services.Deployment
                             {
                                 formModel = await Request.StreamFile(file);
                             }
+                            
+                            deploymentInfo.RepositoryUrl = zipFilePath;
                         }
                     }
                     else if (deploymentInfo.RemoteURL != null)
@@ -473,18 +475,37 @@ namespace Kudu.Services.Deployment
                                     await content.CopyToAsync(fileStream);
                                 }
                             }
+
+                            deploymentInfo.RepositoryUrl = zipFilePath;
                         }
                     }
-                    else
+                    // For zip artifacts (zipdeploy, wardeploy, onedeploy with type=zip), copy the request body in a temp zip file.
+                    // It will be extracted to the appropriate directory by the Fetch handler
+                    else if (artifactType == ArtifactType.Zip)
                     {
                         using (var file = System.IO.File.Create(zipFilePath))
                         {
                             await Request.Body.CopyToAsync(file);
                         }
+
+                        deploymentInfo.RepositoryUrl = zipFilePath;
+                    }
+                    // Copy the request body to a temp file.
+                    // It will be moved to the appropriate directory by the Fetch handler
+                    else if (deploymentInfo.Deployer == Constants.OneDeploy)
+                    {
+                        var artifactTempPath = Path.Combine(_environment.ZipTempPath, deploymentInfo.TargetFileName);
+                        using (_tracer.Step("Saving request content to {0}", artifactTempPath))
+                        {
+                            using (var file = System.IO.File.Create(artifactTempPath))
+                            {
+                                await Request.Body.CopyToAsync(file);
+                            }
+
+                            deploymentInfo.RepositoryUrl = artifactTempPath;
+                        }
                     }
                 }
-
-                deploymentInfo.RepositoryUrl = zipFilePath;
             }
 
             var result =
@@ -576,14 +597,16 @@ namespace Kudu.Services.Deployment
             return Task.CompletedTask;
         }
 
-        private Task OneDeployFetch(IRepository repository, DeploymentInfoBase deploymentInfo, string targetBranch,
+        private async Task OneDeployFetch(IRepository repository, DeploymentInfoBase deploymentInfo, string targetBranch,
             ILogger logger, ITracer tracer)
         {
-            var zipDeploymentInfo = (ArtifactDeploymentInfo)deploymentInfo;
+            var artifactDeploymentInfo = (ArtifactDeploymentInfo)deploymentInfo;
 
             // For this kind of deployment, RepositoryUrl is a local path.
-            var sourceZipFile = zipDeploymentInfo.RepositoryUrl;
-            var extractTargetDirectory = repository.RepositoryPath;
+            var sourceZipFile = artifactDeploymentInfo.RepositoryUrl;
+
+            // This is the path where the artifact being deployed is staged, before it is copied to the final target location
+            var artifactDirectoryStagingPath = repository.RepositoryPath;
 
             var info = FileSystemHelpers.FileInfoFromFileName(sourceZipFile);
             var sizeInMb = (info.Length / (1024f * 1024f)).ToString("0.00", CultureInfo.InvariantCulture);
@@ -593,39 +616,58 @@ namespace Kudu.Services.Deployment
                 "Cleaning up temp folders from previous zip deployments and extracting pushed zip file {0} ({1} MB) to {2}",
                 info.FullName,
                 sizeInMb,
-                extractTargetDirectory);
+                artifactDirectoryStagingPath);
 
             logger.Log(message);
 
             using (tracer.Step(message))
             {
-                // If extractTargetDirectory already exists, rename it so we can delete it concurrently with
-                // the unzip (along with any other junk in the folder)
-                var targetInfo = FileSystemHelpers.DirectoryInfoFromDirectoryName(extractTargetDirectory);
+                var targetInfo = FileSystemHelpers.DirectoryInfoFromDirectoryName(artifactDirectoryStagingPath);
                 if (targetInfo.Exists)
                 {
+                    // If tempDirPath already exists, rename it so we can delete it later 
                     var moveTarget = Path.Combine(targetInfo.Parent.FullName, Path.GetRandomFileName());
-                    targetInfo.MoveTo(moveTarget);
+                    using (tracer.Step(string.Format("Renaming ({0}) to ({1})", targetInfo.FullName, moveTarget)))
+                    {
+                        targetInfo.MoveTo(moveTarget);
+                    }
                 }
 
-                DeleteFilesAndDirsExcept(sourceZipFile, extractTargetDirectory, tracer);
+                // Create artifact staging directory before later use 
+                Directory.CreateDirectory(artifactDirectoryStagingPath);
+                var artifactFileStagingPath = Path.Combine(artifactDirectoryStagingPath, deploymentInfo.TargetFileName);
 
-                FileSystemHelpers.CreateDirectory(extractTargetDirectory);
-
-                using (var file = info.OpenRead())
-
-                using (var zip = new ZipArchive(file, ZipArchiveMode.Read))
+                // If RemoteUrl is non-null, it means the content needs to be downloaded from the Url source to the staging location
+                // Else, it had been downloaded already so we just move the downloaded file to the staging location
+                if (!string.IsNullOrWhiteSpace(artifactDeploymentInfo.RemoteURL))
                 {
-                    deploymentInfo.repositorySymlinks = zip.Extract(extractTargetDirectory, preserveSymlinks: ShouldPreserveSymlinks());
+                    using (tracer.Step("Saving request content to {0}", artifactFileStagingPath))
+                    {
+                        // TODO(shrirs) var content = await DeploymentHelper.GetArtifactContentFromURL(artifactDeploymentInfo, tracer);
+                        var copyTask = Task.CompletedTask; // TODO(shrirs) content.CopyToAsync(artifactFileStagingPath, tracer);
 
-                    CreateZipSymlinks(deploymentInfo.repositorySymlinks, extractTargetDirectory);
+                        // Deletes all files and directories except for artifactFileStagingPath and artifactDirectoryStagingPath
+                        var cleanTask = Task.Run(() => DeleteFilesAndDirsExcept(artifactFileStagingPath, artifactDirectoryStagingPath, tracer));
 
-                    PermissionHelper.ChmodRecursive("777", extractTargetDirectory, tracer, TimeSpan.FromMinutes(1));
+                        // Lets the copy and cleanup tasks to run in parallel and wait for them to finish 
+                        await Task.WhenAll(copyTask, cleanTask);
+                    }
                 }
-            }
+                else
+                {
+                    var srcInfo = FileSystemHelpers.DirectoryInfoFromDirectoryName(deploymentInfo.RepositoryUrl);
+                    using (tracer.Step(string.Format("Moving {0} to {1}", targetInfo.FullName, artifactFileStagingPath)))
+                    {
+                        srcInfo.MoveTo(artifactFileStagingPath);
+                    }
 
-            CommitRepo(repository, zipDeploymentInfo);
-            return Task.CompletedTask;
+                    // Deletes all files and directories except for artifactFileStagingPath and artifactDirectoryStagingPath
+                    DeleteFilesAndDirsExcept(artifactFileStagingPath, artifactDirectoryStagingPath, tracer);
+                }
+
+                // The deployment flow expects at least 1 commit in the IRepository commit, refer to CommitRepo() for more info
+                CommitRepo(repository, artifactDeploymentInfo);
+            }
         }
 
         private async Task LocalZipHandler(IRepository repository, DeploymentInfoBase deploymentInfo,
