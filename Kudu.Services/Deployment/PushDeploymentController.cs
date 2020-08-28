@@ -21,6 +21,7 @@ using System.Net.Http;
 using System.Collections.Generic;
 using Kudu.Core.Helpers;
 using System.Threading;
+using Kudu.Contracts.Deployment;
 
 namespace Kudu.Services.Deployment
 {
@@ -140,7 +141,6 @@ namespace Kudu.Services.Deployment
             }
         }
 
-
         [HttpPost]
         [DisableRequestSizeLimit]
         [DisableFormValueModelBinding]
@@ -183,6 +183,192 @@ namespace Kudu.Services.Deployment
                 };
                 return await PushDeployAsync(deploymentInfo, isAsync, HttpContext);
             }
+        }
+
+        //
+        // Supports:
+        // 1. Deploy artifact in the request body:
+        //    - For this: Query parameters should contain configuration.
+        //                Example: /api/publish?type=war
+        //                Request body should contain the artifact being deployed
+        // 2. URL based deployment:
+        //    - For this: Query parameters should contain configuration. Example: /api/publish?type=war
+        //                Example: /api/publish?type=war
+        //                Request body should contain JSON with 'packageUri' property pointing to the artifact location
+        //                Example: { "packageUri": "http://foo/bar.war?accessToken=123" }
+        // 3. ARM template based deployment:
+        //    - For this: Query parameters are not supported.
+        //                Request body should contain JSON with configuration as well as the artifact location
+        //                Example: { "properties": { "type": "war", "packageUri": "http://foo/bar.war?accessToken=123" } }
+        //
+        [HttpPost]
+        [HttpPut]
+        [DisableRequestSizeLimit]
+        [DisableFormValueModelBinding]
+        public async Task<IActionResult> OneDeploy(
+            [FromQuery] string type = null,
+            [FromQuery] bool async = false,
+            [FromQuery] string path = null,
+            [FromQuery] bool restart = true,
+            [FromQuery] string stack = null
+            )
+        {
+            using (_tracer.Step("OneDeploy"))
+            {
+                //
+                // 'async' is not a CSharp-ish variable name. And although it is a valid variable name, some
+                // IDEs confuse it to be the 'async' keyword in C#.
+                // On the other hand, isAsync is not a good name for the query-parameter.
+                // So we use 'async' as the query parameter, and then assign it to the C# variable 'isAsync' 
+                // at the earliest. Hereon, we use just 'isAsync'.
+                // 
+                bool isAsync = async;
+
+                var deploymentInfo = new ArtifactDeploymentInfo(_environment, _traceFactory)
+                {
+                    AllowDeploymentWhileScmDisabled = true,
+                    Deployer = Constants.OneDeploy,
+                    IsContinuous = false,
+                    AllowDeferredDeployment = false,
+                    IsReusable = false,
+                    TargetChangeset = DeploymentManager.CreateTemporaryChangeSet(message: "OneDeploy"),
+                    CommitId = null,
+                    RepositoryType = RepositoryType.None,
+                    Fetch = OneDeployFetch,
+                    DoFullBuildByDefault = false,
+                    Message = "OneDeploy",
+                    WatchedFileEnabled = false,
+                    RestartAllowed = restart,
+                };
+
+                string websiteStack = !string.IsNullOrWhiteSpace(stack) ? stack : _settings.GetValue(Constants.StackEnvVarName);
+
+                ArtifactType artifactType = ArtifactType.Invalid;
+                try
+                {
+                    artifactType = (ArtifactType)Enum.Parse(typeof(ArtifactType), type, ignoreCase: true);
+                }
+                catch
+                {
+                    return StatusCode(StatusCodes.Status400BadRequest, $"type='{type}' not recognized");
+                }
+
+                switch (artifactType)
+                {
+                    case ArtifactType.War:
+                        if (!string.Equals(websiteStack, Constants.Tomcat, StringComparison.OrdinalIgnoreCase))
+                        {
+                            return StatusCode(StatusCodes.Status400BadRequest, $"WAR files cannot be deployed to stack='{websiteStack}'. Expected stack='TOMCAT'");
+                        }
+
+                        // Support for legacy war deployments
+                        // Sets TargetDirectoryPath then deploys the War file as a Zip so it can be extracted
+                        // then deployed
+                        if (!string.IsNullOrWhiteSpace(path))
+                        {
+                            //
+                            // For legacy war deployments, the only path allowed is site/wwwroot/webapps/<directory-name>
+                            //
+
+                            var segments = path.Split('/');
+                            if (segments.Length != 4 || !path.StartsWith("site/wwwroot/webapps/") || string.IsNullOrWhiteSpace(segments[3]))
+                            {
+                                return StatusCode(StatusCodes.Status400BadRequest, $"path='{path}'. Only allowed path when type={artifactType} is site/wwwroot/webapps/<directory-name>. Example: path=site/wwwroot/webapps/ROOT");
+                            }
+
+                            deploymentInfo.TargetDirectoryPath = Path.Combine(_environment.RootPath, path);
+                            deploymentInfo.Fetch = LocalZipHandler;
+                            deploymentInfo.CleanupTargetDirectory = true;
+                            artifactType = ArtifactType.Zip;
+                        }
+                        else
+                        {
+                            // For type=war, the target file is app.war
+                            // As we want app.war to be deployed to wwwroot, no need to configure TargetDirectoryPath
+                            deploymentInfo.TargetFileName = "app.war";
+                        }
+
+                        break;
+
+                    case ArtifactType.Jar:
+                        if (!string.Equals(websiteStack, Constants.JavaSE, StringComparison.OrdinalIgnoreCase))
+                        {
+                            return StatusCode(StatusCodes.Status400BadRequest, $"JAR files cannot be deployed to stack='{websiteStack}'. Expected stack='JAVASE'");
+                        }
+
+                        deploymentInfo.TargetFileName = "app.jar";
+
+                        break;
+
+                    case ArtifactType.Ear:
+                        // Currently not supported on Windows but here for future use
+                        if (!string.Equals(websiteStack, Constants.JBossEap, StringComparison.OrdinalIgnoreCase))
+                        {
+                            return StatusCode(StatusCodes.Status400BadRequest, $"EAR files cannot be deployed to stack='{websiteStack}'. Expected stack='JBOSSEAP'");
+                        }
+
+                        deploymentInfo.TargetFileName = "app.ear";
+
+                        break;
+
+                    case ArtifactType.Lib:
+                        if (string.IsNullOrWhiteSpace(path))
+                        {
+                            return StatusCode(StatusCodes.Status400BadRequest, $"Path must be defined for library deployments");
+                        }
+
+                        SetTargetFromPath(deploymentInfo, path);
+
+                        break;
+
+                    case ArtifactType.Startup:
+                        SetTargetFromPath(deploymentInfo, GetStartupFileName());
+
+                        break;
+
+                    case ArtifactType.Static:
+                        if (string.IsNullOrWhiteSpace(path))
+                        {
+                            return StatusCode(StatusCodes.Status400BadRequest, $"Path must be defined for static file deployments");
+                        }
+
+                        SetTargetFromPath(deploymentInfo, path);
+
+                        break;
+
+                    case ArtifactType.Zip:
+                        deploymentInfo.Fetch = LocalZipHandler;
+
+                        break;
+
+                    default:
+                        return StatusCode(StatusCodes.Status400BadRequest, $"Artifact type '{artifactType}' not supported");
+                }
+
+                return await PushDeployAsync(deploymentInfo, isAsync, HttpContext);
+            }
+        }
+
+        private void SetTargetFromPath(DeploymentInfoBase deploymentInfo, string path)
+        {
+            // Extract directory path and file name from 'path'
+            // Example: path=a/b/c.jar => TargetDirectoryName=a/b and TargetFileName=c.jar
+            deploymentInfo.TargetFileName = Path.GetFileName(path);
+
+            var relativeDirectoryPath = Path.GetDirectoryName(path);
+
+            // Translate /foo/bar to foo/bar
+            // Translate \foo\bar to foo\bar
+            // That way, we can combine it with %HOME% to get the absolute path
+            relativeDirectoryPath = relativeDirectoryPath.TrimStart('/', '\\');
+            var absoluteDirectoryPath = Path.Combine(_environment.RootPath, relativeDirectoryPath);
+
+            deploymentInfo.TargetDirectoryPath = absoluteDirectoryPath;
+        }
+
+        private static string GetStartupFileName()
+        {
+            return OSDetector.IsOnWindows() ? "startup.bat" : "startup.sh";
         }
 
         private string GetZipURLFromJSON(JObject requestObject)
@@ -341,7 +527,59 @@ namespace Kudu.Services.Deployment
         private Task LocalZipFetch(IRepository repository, DeploymentInfoBase deploymentInfo, string targetBranch,
             ILogger logger, ITracer tracer)
         {
-            var zipDeploymentInfo = (ArtifactDeploymentInfo) deploymentInfo;
+            var zipDeploymentInfo = (ArtifactDeploymentInfo)deploymentInfo;
+
+            // For this kind of deployment, RepositoryUrl is a local path.
+            var sourceZipFile = zipDeploymentInfo.RepositoryUrl;
+            var extractTargetDirectory = repository.RepositoryPath;
+
+            var info = FileSystemHelpers.FileInfoFromFileName(sourceZipFile);
+            var sizeInMb = (info.Length / (1024f * 1024f)).ToString("0.00", CultureInfo.InvariantCulture);
+
+            var message = String.Format(
+                CultureInfo.InvariantCulture,
+                "Cleaning up temp folders from previous zip deployments and extracting pushed zip file {0} ({1} MB) to {2}",
+                info.FullName,
+                sizeInMb,
+                extractTargetDirectory);
+
+            logger.Log(message);
+
+            using (tracer.Step(message))
+            {
+                // If extractTargetDirectory already exists, rename it so we can delete it concurrently with
+                // the unzip (along with any other junk in the folder)
+                var targetInfo = FileSystemHelpers.DirectoryInfoFromDirectoryName(extractTargetDirectory);
+                if (targetInfo.Exists)
+                {
+                    var moveTarget = Path.Combine(targetInfo.Parent.FullName, Path.GetRandomFileName());
+                    targetInfo.MoveTo(moveTarget);
+                }
+
+                DeleteFilesAndDirsExcept(sourceZipFile, extractTargetDirectory, tracer);
+
+                FileSystemHelpers.CreateDirectory(extractTargetDirectory);
+
+                using (var file = info.OpenRead())
+
+                using (var zip = new ZipArchive(file, ZipArchiveMode.Read))
+                {
+                    deploymentInfo.repositorySymlinks = zip.Extract(extractTargetDirectory, preserveSymlinks: ShouldPreserveSymlinks());
+
+                    CreateZipSymlinks(deploymentInfo.repositorySymlinks, extractTargetDirectory);
+
+                    PermissionHelper.ChmodRecursive("777", extractTargetDirectory, tracer, TimeSpan.FromMinutes(1));
+                }
+            }
+
+            CommitRepo(repository, zipDeploymentInfo);
+            return Task.CompletedTask;
+        }
+
+        private Task OneDeployFetch(IRepository repository, DeploymentInfoBase deploymentInfo, string targetBranch,
+            ILogger logger, ITracer tracer)
+        {
+            var zipDeploymentInfo = (ArtifactDeploymentInfo)deploymentInfo;
 
             // For this kind of deployment, RepositoryUrl is a local path.
             var sourceZipFile = zipDeploymentInfo.RepositoryUrl;
