@@ -393,6 +393,8 @@ namespace Kudu.Services.Deployment
 
             var relativeDirectoryPath = Path.GetDirectoryName(path);
 
+            relativeDirectoryPath = relativeDirectoryPath ?? string.Empty;
+
             // Translate /foo/bar to foo/bar
             // Translate \foo\bar to foo\bar
             // That way, we can combine it with %HOME% to get the absolute path
