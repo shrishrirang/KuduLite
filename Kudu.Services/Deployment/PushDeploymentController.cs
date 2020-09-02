@@ -263,8 +263,21 @@ namespace Kudu.Services.Deployment
                 // 
                 bool isAsync = async;
 
+                string websiteStack = !string.IsNullOrWhiteSpace(stack) ? stack : System.Environment.GetEnvironmentVariable(Constants.StackEnvVarName);
+
+                ArtifactType artifactType = ArtifactType.Invalid;
+                try
+                {
+                    artifactType = (ArtifactType)Enum.Parse(typeof(ArtifactType), type, ignoreCase: true);
+                }
+                catch
+                {
+                    return StatusCode(StatusCodes.Status400BadRequest, $"type='{type}' not recognized");
+                }
+
                 var deploymentInfo = new ArtifactDeploymentInfo(_environment, _traceFactory)
                 {
+                    ArtifactType = artifactType,
                     AllowDeploymentWhileScmDisabled = true,
                     Deployer = Constants.OneDeploy,
                     IsContinuous = false,
@@ -281,18 +294,6 @@ namespace Kudu.Services.Deployment
                     WatchedFileEnabled = false,
                     RestartAllowed = restart.GetValueOrDefault(true),
                 };
-
-                string websiteStack = !string.IsNullOrWhiteSpace(stack) ? stack : System.Environment.GetEnvironmentVariable(Constants.StackEnvVarName);
-
-                ArtifactType artifactType = ArtifactType.Invalid;
-                try
-                {
-                    artifactType = (ArtifactType)Enum.Parse(typeof(ArtifactType), type, ignoreCase: true);
-                }
-                catch
-                {
-                    return StatusCode(StatusCodes.Status400BadRequest, $"type='{type}' not recognized");
-                }
 
                 switch (artifactType)
                 {
@@ -315,7 +316,7 @@ namespace Kudu.Services.Deployment
                                 return StatusCode(StatusCodes.Status400BadRequest, $"path='{path}'. Only allowed path when type={artifactType} is webapps/<directory-name>. Example: path=webapps/ROOT");
                             }
 
-                            deploymentInfo.TargetRootPath = _environment.WebRootPath;
+                            deploymentInfo.TargetDirectoryPath = path;
                             deploymentInfo.Fetch = LocalZipHandler;
                             deploymentInfo.CleanupTargetDirectory = true;
                             artifactType = ArtifactType.Zip;
@@ -398,6 +399,8 @@ namespace Kudu.Services.Deployment
                     case ArtifactType.Zip:
                         deploymentInfo.Fetch = LocalZipHandler;
 
+                        deploymentInfo.TargetDirectoryPath = path;
+
                         deploymentInfo.CleanupTargetDirectory = clean.GetValueOrDefault(true);
 
                         break;
@@ -416,6 +419,7 @@ namespace Kudu.Services.Deployment
             // Example: path=a/b/c.jar => TargetDirectoryName=a/b and TargetFileName=c.jar
             // Example: path=c.jar => TargetDirectoryName=null and TargetFileName=c.jar
             // Example: path=/c.jar => TargetDirectoryName="" and TargetFileName=c.jar
+            // Example: path=null => TargetDirectoryName=null and TargetFileName=null
             deploymentInfo.TargetFileName = Path.GetFileName(relativeFilePath);
             deploymentInfo.TargetDirectoryPath = Path.GetDirectoryName(relativeFilePath);
         }
@@ -620,17 +624,33 @@ namespace Kudu.Services.Deployment
 
                 DeleteFilesAndDirsExcept(sourceZipFile, extractTargetDirectory, tracer);
 
-                FileSystemHelpers.CreateDirectory(extractTargetDirectory);
+                //
+                // We want to create a directory hierarchy under 'extractTargetDirectory'
+                // such that it exactly matches deploymentInfo.TargetDirectoryPath
+                // We do this only for OneDeploy scenarios, but when OneDeploy is
+                // deploying a war, we don't want to do that as that is equivalent to doing
+                // wardeploy.
+                // 
+                string extractSubDirectoryPath = extractTargetDirectory;
+
+                if (!string.IsNullOrWhiteSpace(deploymentInfo.TargetDirectoryPath) &&
+                    deploymentInfo.Deployer == Constants.OneDeploy &&
+                    deploymentInfo.ArtifactType != ArtifactType.War)
+                {
+                    extractSubDirectoryPath = Path.Combine(extractTargetDirectory, deploymentInfo.TargetDirectoryPath);
+                }
+
+                FileSystemHelpers.CreateDirectory(extractSubDirectoryPath);
 
                 using (var file = info.OpenRead())
 
                 using (var zip = new ZipArchive(file, ZipArchiveMode.Read))
                 {
-                    deploymentInfo.repositorySymlinks = zip.Extract(extractTargetDirectory, preserveSymlinks: ShouldPreserveSymlinks());
+                    deploymentInfo.repositorySymlinks = zip.Extract(extractSubDirectoryPath, preserveSymlinks: ShouldPreserveSymlinks());
 
-                    CreateZipSymlinks(deploymentInfo.repositorySymlinks, extractTargetDirectory);
+                    CreateZipSymlinks(deploymentInfo.repositorySymlinks, extractSubDirectoryPath);
 
-                    PermissionHelper.ChmodRecursive("777", extractTargetDirectory, tracer, TimeSpan.FromMinutes(1));
+                    PermissionHelper.ChmodRecursive("777", extractSubDirectoryPath, tracer, TimeSpan.FromMinutes(1));
                 }
             }
 
@@ -664,7 +684,7 @@ namespace Kudu.Services.Deployment
                 var targetInfo = FileSystemHelpers.DirectoryInfoFromDirectoryName(artifactDirectoryStagingPath);
                 if (targetInfo.Exists)
                 {
-                    // If tempDirPath already exists, rename it so we can delete it later 
+                    // If the staging path already exists, rename it so we can delete it later 
                     var moveTarget = Path.Combine(targetInfo.Parent.FullName, Path.GetRandomFileName());
                     using (tracer.Step(string.Format("Renaming ({0}) to ({1})", targetInfo.FullName, moveTarget)))
                     {
@@ -672,9 +692,21 @@ namespace Kudu.Services.Deployment
                     }
                 }
 
-                // Create artifact staging directory before later use 
-                Directory.CreateDirectory(artifactDirectoryStagingPath);
-                var artifactFileStagingPath = Path.Combine(artifactDirectoryStagingPath, deploymentInfo.TargetFileName);
+                //
+                // We want to create the directory hierarchy under artifactDirectoryStagingPath
+                // that exactly matches artifactDeploymentInfo.TargetDirectoryPath
+                //
+                string stagingSubDirPath = artifactDirectoryStagingPath;
+
+                if (!string.IsNullOrWhiteSpace(artifactDeploymentInfo.TargetDirectoryPath))
+                {
+                    stagingSubDirPath = Path.Combine(artifactDirectoryStagingPath, artifactDeploymentInfo.TargetDirectoryPath);
+                }
+
+                // Create artifact staging directory hierarchy before later use 
+                Directory.CreateDirectory(stagingSubDirPath);
+
+                var artifactFileStagingPath = Path.Combine(stagingSubDirPath, deploymentInfo.TargetFileName);
 
                 // TODO(shrirs): remove this if not needed
                 // If RemoteUrl is non-null, it means the content needs to be downloaded from the Url source to the staging location

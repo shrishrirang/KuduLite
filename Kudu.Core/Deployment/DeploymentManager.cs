@@ -7,6 +7,7 @@ using System.Linq;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using Kudu.Contracts.Deployment;
 using Kudu.Contracts.Infrastructure;
 using Kudu.Contracts.Settings;
 using Kudu.Contracts.Tracing;
@@ -842,6 +843,11 @@ namespace Kudu.Core.Deployment
             }
 
             var rootDirectoryPath = string.IsNullOrWhiteSpace(deploymentInfo.TargetRootPath) ? environment.WebRootPath : deploymentInfo.TargetRootPath;
+
+            if (deploymentInfo.Deployer == Constants.OneDeploy && deploymentInfo.ArtifactType != ArtifactType.War)
+            {
+                return rootDirectoryPath;
+            }
 
             if (!string.IsNullOrWhiteSpace(targetDirectoryPath))
             {

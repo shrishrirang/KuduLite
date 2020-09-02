@@ -4,6 +4,7 @@ using Kudu.Contracts.Tracing;
 using System.Threading.Tasks;
 using System.Collections;
 using System.Collections.Generic;
+using Kudu.Contracts.Deployment;
 
 namespace Kudu.Core.Deployment
 {
@@ -18,6 +19,7 @@ namespace Kudu.Core.Deployment
             DoFullBuildByDefault = true;
             WatchedFileEnabled = true;
             RestartAllowed = true;
+            ArtifactType = ArtifactType.Invalid;
         }
 
         public RepositoryType RepositoryType { get; set; }
@@ -51,6 +53,10 @@ namespace Kudu.Core.Deployment
         // Specifies the name of the deployed artifact.
         // Example: When deploying startup files, OneDeploy will set this to startup.bat (or startup.sh)
         public string TargetFileName { get; set; }
+
+        // Optional.
+        // Type of artifact being deployed.
+        public ArtifactType ArtifactType { get; set; }
 
         // Optional.
         // Path of the file that is watched for changes by the web server.
