@@ -169,6 +169,9 @@ namespace Kudu
         public const string OneDeploy = "OneDeploy";
         public const string StackEnvVarName = "WEBSITE_STACK";
 
+        public const string ScriptsDirectoryRelativePath = "site/scripts";
+        public const string LibsDirectoryRelativePath = "site/libs";
+
         // Stacks supported by OneDeploy 
         public const string Tomcat = "TOMCAT";
         public const string JavaSE = "JAVA";
