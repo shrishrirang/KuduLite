@@ -266,13 +266,14 @@ namespace Kudu.Services.Deployment
                     IsContinuous = false,
                     AllowDeferredDeployment = false,
                     IsReusable = false,
-                    TargetChangeset = DeploymentManager.CreateTemporaryChangeSet(message: "OneDeploy"),
+                    TargetRootPath = _environment.WebRootPath,
+                    TargetChangeset = DeploymentManager.CreateTemporaryChangeSet(message: Constants.OneDeploy),
                     CommitId = null,
                     RepositoryType = RepositoryType.None,
                     RemoteURL = remoteArtifactUrl,
                     Fetch = OneDeployFetch,
                     DoFullBuildByDefault = false,
-                    Message = "OneDeploy",
+                    Message = Constants.OneDeploy,
                     WatchedFileEnabled = false,
                     RestartAllowed = restart,
                 };
@@ -307,12 +308,13 @@ namespace Kudu.Services.Deployment
                             //
 
                             var segments = path.Split('/');
-                            if (segments.Length != 4 || !path.StartsWith("site/wwwroot/webapps/") || string.IsNullOrWhiteSpace(segments[3]))
+                            if (segments.Length != 2 || !path.StartsWith("webapps/") || string.IsNullOrWhiteSpace(segments[1]))
                             {
-                                return StatusCode(StatusCodes.Status400BadRequest, $"path='{path}'. Only allowed path when type={artifactType} is site/wwwroot/webapps/<directory-name>. Example: path=site/wwwroot/webapps/ROOT");
+                                return StatusCode(StatusCodes.Status400BadRequest, $"path='{path}'. Only allowed path when type={artifactType} is site/wwwroot/webapps/<directory-name>. Example: path=webapps/ROOT");
                             }
 
-                            deploymentInfo.TargetDirectoryPath = Path.Combine(_environment.RootPath, path);
+                            deploymentInfo.TargetRootPath = _environment.WebRootPath;
+                            deploymentInfo.TargetDirectoryPath = path;
                             deploymentInfo.Fetch = LocalZipHandler;
                             deploymentInfo.CleanupTargetDirectory = true;
                             artifactType = ArtifactType.Zip;
@@ -353,12 +355,25 @@ namespace Kudu.Services.Deployment
                             return StatusCode(StatusCodes.Status400BadRequest, $"Path must be defined for library deployments");
                         }
 
+                        deploymentInfo.TargetRootPath = Path.Combine(_environment.RootPath, "site/libs");
                         SetTargetFromPath(deploymentInfo, path);
 
                         break;
 
                     case ArtifactType.Startup:
+                        deploymentInfo.TargetRootPath = Path.Combine(_environment.RootPath, "site/scripts");
                         SetTargetFromPath(deploymentInfo, GetStartupFileName());
+
+                        break;
+
+                    case ArtifactType.Script:
+                        if (string.IsNullOrWhiteSpace(path))
+                        {
+                            return StatusCode(StatusCodes.Status400BadRequest, $"Path must be defined for script deployments");
+                        }
+
+                        deploymentInfo.TargetRootPath = Path.Combine(_environment.RootPath, "site/scripts");
+                        SetTargetFromPath(deploymentInfo, path);
 
                         break;
 
@@ -385,23 +400,14 @@ namespace Kudu.Services.Deployment
             }
         }
 
-        private void SetTargetFromPath(DeploymentInfoBase deploymentInfo, string path)
+        private void SetTargetFromPath(DeploymentInfoBase deploymentInfo, string relativeFilePath)
         {
-            // Extract directory path and file name from 'path'
+            // Extract directory path and file name from relativeFilePath
             // Example: path=a/b/c.jar => TargetDirectoryName=a/b and TargetFileName=c.jar
-            deploymentInfo.TargetFileName = Path.GetFileName(path);
-
-            var relativeDirectoryPath = Path.GetDirectoryName(path);
-
-            relativeDirectoryPath = relativeDirectoryPath ?? string.Empty;
-
-            // Translate /foo/bar to foo/bar
-            // Translate \foo\bar to foo\bar
-            // That way, we can combine it with %HOME% to get the absolute path
-            relativeDirectoryPath = relativeDirectoryPath.TrimStart('/', '\\');
-            var absoluteDirectoryPath = Path.Combine(_environment.RootPath, relativeDirectoryPath);
-
-            deploymentInfo.TargetDirectoryPath = absoluteDirectoryPath;
+            // Example: path=c.jar => TargetDirectoryName=null and TargetFileName=c.jar
+            // Example: path=/c.jar => TargetDirectoryName="" and TargetFileName=c.jar
+            deploymentInfo.TargetFileName = Path.GetFileName(relativeFilePath);
+            deploymentInfo.TargetDirectoryPath = Path.GetDirectoryName(relativeFilePath);
         }
 
         private static string GetStartupFileName()
@@ -591,8 +597,6 @@ namespace Kudu.Services.Deployment
                 sizeInMb,
                 extractTargetDirectory);
 
-            logger.Log(message);
-
             using (tracer.Step(message))
             {
                 // If extractTargetDirectory already exists, rename it so we can delete it concurrently with
@@ -644,8 +648,6 @@ namespace Kudu.Services.Deployment
                 info.FullName,
                 sizeInMb,
                 artifactDirectoryStagingPath);
-
-            logger.Log(message);
 
             using (tracer.Step(message))
             {

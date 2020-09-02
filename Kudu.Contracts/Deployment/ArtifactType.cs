@@ -15,6 +15,7 @@ namespace Kudu.Contracts.Deployment
         Lib,
         Static,
         Startup,
+        Script,
         Zip,
     }
 }

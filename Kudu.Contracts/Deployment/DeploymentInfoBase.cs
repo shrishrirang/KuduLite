@@ -37,6 +37,12 @@ namespace Kudu.Core.Deployment
         public IDictionary<string, string> repositorySymlinks { get; set; }
 
         // Optional.
+        // By default, TargetDirectoryPath specifies the directory to deploy to relative to /home/site/wwwroot.
+        // This property can be used to change the root from wwwroot to something else.
+        // Example: "webapps/ROOT"
+        public string TargetRootPath { get; set; }
+
+        // Optional.
         // Path of the directory to be deployed to. The path should be relative to the wwwroot directory.
         // Example: "webapps/ROOT"
         public string TargetDirectoryPath { get; set; }

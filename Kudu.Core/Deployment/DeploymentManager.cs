@@ -840,14 +840,16 @@ namespace Kudu.Core.Deployment
             {
                 targetDirectoryPath = deploymentInfo?.TargetDirectoryPath;
             }
-            
+
+            var rootDirectoryPath = string.IsNullOrWhiteSpace(deploymentInfo.TargetRootPath) ? environment.WebRootPath : deploymentInfo.TargetRootPath;
+
             if (!string.IsNullOrWhiteSpace(targetDirectoryPath))
             {
                 targetDirectoryPath = targetDirectoryPath.Trim('\\', '/');
-                return Path.GetFullPath(Path.Combine(environment.WebRootPath, targetDirectoryPath));
+                return Path.GetFullPath(Path.Combine(rootDirectoryPath, targetDirectoryPath));
             }
 
-            return environment.WebRootPath;
+            return rootDirectoryPath;
         }
 
         private IEnumerable<DeployResult> EnumerateResults()
