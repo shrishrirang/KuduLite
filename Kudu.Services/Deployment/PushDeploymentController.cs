@@ -243,7 +243,7 @@ namespace Kudu.Services.Deployment
                             restart = requestJson.Value<bool?>("restart");
                             clean = requestJson.Value<bool?>("clean");
                             stack = requestJson.Value<string>("stack");
-                            ignoreStack = requestJson.Value<bool>("ignoreStack");
+                            ignoreStack = requestJson.Value<bool>("ignorestack");
                         }
 
                         remoteArtifactUrl = GetArtifactURLFromJSON(requestJson);
