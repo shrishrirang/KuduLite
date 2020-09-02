@@ -278,7 +278,7 @@ namespace Kudu.Services.Deployment
                     RestartAllowed = restart,
                 };
 
-                string websiteStack = !string.IsNullOrWhiteSpace(stack) ? stack : _settings.GetValue(Constants.StackEnvVarName);
+                string websiteStack = !string.IsNullOrWhiteSpace(stack) ? stack : System.Environment.GetEnvironmentVariable(Constants.StackEnvVarName);
 
                 ArtifactType artifactType = ArtifactType.Invalid;
                 try
@@ -295,7 +295,7 @@ namespace Kudu.Services.Deployment
                     case ArtifactType.War:
                         if (!string.Equals(websiteStack, Constants.Tomcat, StringComparison.OrdinalIgnoreCase))
                         {
-                            return StatusCode(StatusCodes.Status400BadRequest, $"WAR files cannot be deployed to stack='{websiteStack}'. Expected stack='TOMCAT'");
+                            return StatusCode(StatusCodes.Status400BadRequest, $"WAR files cannot be deployed to stack='{websiteStack}'. Expected stack='{Constants.Tomcat}'");
                         }
 
                         // Support for legacy war deployments
@@ -331,7 +331,7 @@ namespace Kudu.Services.Deployment
                     case ArtifactType.Jar:
                         if (!string.Equals(websiteStack, Constants.JavaSE, StringComparison.OrdinalIgnoreCase))
                         {
-                            return StatusCode(StatusCodes.Status400BadRequest, $"JAR files cannot be deployed to stack='{websiteStack}'. Expected stack='JAVASE'");
+                            return StatusCode(StatusCodes.Status400BadRequest, $"JAR files cannot be deployed to stack='{websiteStack}'. Expected stack='{Constants.JavaSE}'");
                         }
 
                         deploymentInfo.TargetFileName = "app.jar";
@@ -342,7 +342,7 @@ namespace Kudu.Services.Deployment
                         // Currently not supported on Windows but here for future use
                         if (!string.Equals(websiteStack, Constants.JBossEap, StringComparison.OrdinalIgnoreCase))
                         {
-                            return StatusCode(StatusCodes.Status400BadRequest, $"EAR files cannot be deployed to stack='{websiteStack}'. Expected stack='JBOSSEAP'");
+                            return StatusCode(StatusCodes.Status400BadRequest, $"EAR files cannot be deployed to stack='{websiteStack}'. Expected stack='{Constants.JBossEap}'");
                         }
 
                         deploymentInfo.TargetFileName = "app.ear";
